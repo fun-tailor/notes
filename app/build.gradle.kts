@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.swan.notes"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"

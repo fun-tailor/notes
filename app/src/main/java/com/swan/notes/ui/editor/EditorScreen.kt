@@ -111,6 +111,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 private val EditorLineHeight = 51.sp
@@ -142,6 +143,8 @@ fun EditorScreen(
     var topMenuOpen by remember { mutableStateOf(false) }
     var isEditorFocused by remember { mutableStateOf(false) }
     var caretRect by remember { mutableStateOf<Rect?>(null) }
+    var lastAutoScrollOffset by remember(noteId) { mutableIntStateOf(-1) }
+    var lastAutoScrollViewport by remember(noteId) { mutableIntStateOf(-1) }
 
     val isDeleted = note?.let(::isNoteDeleted) == true
     val lineHeightPx = with(density) { EditorLineHeight.toPx() }
@@ -206,6 +209,8 @@ fun EditorScreen(
     LaunchedEffect(noteId) {
         scrollState.scrollTo(0)
         caretRect = null
+        lastAutoScrollOffset = -1
+        lastAutoScrollViewport = -1
     }
 
     LaunchedEffect(autoFocus) {
@@ -213,6 +218,30 @@ fun EditorScreen(
             delay(120)
             focusRequester.requestFocus()
             keyboard?.show()
+        }
+    }
+
+    LaunchedEffect(isEditorFocused, viewportHeightPx) {
+        if (!isEditorFocused || viewportHeightPx <= 0) return@LaunchedEffect
+        val rect = caretRect ?: return@LaunchedEffect
+        val edge = with(density) { 4.dp.toPx() }
+        val cursorTop = metaBarHeightPx + rect.top
+        val cursorBottom = metaBarHeightPx + rect.bottom
+        val visibleTop = scrollState.value.toFloat()
+        val visibleBottom = visibleTop + viewportHeightPx
+        when {
+            cursorBottom > visibleBottom - edge -> {
+                val target = (cursorBottom - viewportHeightPx + edge)
+                    .roundToInt()
+                    .coerceIn(scrollState.value, scrollState.maxValue)
+                if (target > scrollState.value) scrollState.scrollTo(target)
+            }
+            cursorTop < visibleTop + edge -> {
+                val target = (cursorTop - edge)
+                    .roundToInt()
+                    .coerceIn(0, scrollState.value)
+                if (target < scrollState.value) scrollState.scrollTo(target)
+            }
         }
     }
 
@@ -340,7 +369,15 @@ fun EditorScreen(
                                     .coerceIn(0, layout.layoutInput.text.length)
                                 val rect = layout.getCursorRect(offset)
                                 caretRect = rect
-                                if (!isEditorFocused) return@lbl
+                                if (!isEditorFocused) {
+                                    lastAutoScrollOffset = -1
+                                    return@lbl
+                                }
+                                if (offset == lastAutoScrollOffset && viewportHeightPx == lastAutoScrollViewport) {
+                                    return@lbl
+                                }
+                                lastAutoScrollOffset = offset
+                                lastAutoScrollViewport = viewportHeightPx
 
                                 val cursorTop = metaBarHeightPx + rect.top
                                 val cursorBottom = metaBarHeightPx + rect.bottom
@@ -376,7 +413,11 @@ fun EditorScreen(
                 }
             }
 
-            GutterOverlay()
+            GutterOverlay(
+                periodPx = lineHeightPx,
+                scrollOffset = scrollState.value,
+                ruleColor = colors.editorRule,
+            )
         }
     }
 
@@ -425,13 +466,33 @@ fun EditorScreen(
 }
 
 @Composable
-private fun GutterOverlay() {
+private fun GutterOverlay(
+    periodPx: Float,
+    scrollOffset: Int,
+    ruleColor: Color,
+) {
     val colors = SwanTheme.colors
     Box(
         modifier = Modifier
             .fillMaxHeight()
             .width(GutterWidth)
-            .background(colors.gutterBackground),
+            .background(colors.gutterBackground)
+            .drawBehind {
+                if (periodPx <= 0f) return@drawBehind
+                val stroke = 0.6667.dp.toPx()
+                var index = ceil(scrollOffset / periodPx).toInt().coerceAtLeast(1)
+                var y = index * periodPx - scrollOffset
+                while (y <= size.height) {
+                    drawLine(
+                        color = ruleColor,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = stroke,
+                    )
+                    index += 1
+                    y += periodPx
+                }
+            },
     ) {
         Box(
             modifier = Modifier

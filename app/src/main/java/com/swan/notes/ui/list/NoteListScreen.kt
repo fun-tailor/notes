@@ -39,7 +39,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,7 +55,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
@@ -292,6 +291,13 @@ fun NoteListScreen(viewModel: NotesViewModel) {
     val displayNotes: List<NoteDocument> = dragOrder
         ?.mapNotNull { noteMap[it] }
         ?: filteredNotes
+    val dragFromIndex = displayNotes.indexOfFirst { it.id == draggingId }
+    val dragToIndex = if (dragFromIndex >= 0) {
+        (dragFromIndex + (dragOffset / rowHeightPx).roundToInt())
+            .coerceIn(pinnedCount, displayNotes.lastIndex)
+    } else {
+        -1
+    }
 
     fun startDrag(noteId: String) {
         if (searchQuery.isNotBlank()) return
@@ -307,33 +313,32 @@ fun NoteListScreen(viewModel: NotesViewModel) {
 
     fun updateDrag(noteId: String, deltaY: Float) {
         val order = dragOrder ?: return
-        dragOffset += deltaY
-        if (abs(deltaY) > 0.5f) dragMoved = true
-
         val from = order.indexOf(noteId)
         if (from < 0) return
 
-        val deltaPositions = (dragOffset / rowHeightPx).roundToInt()
-        if (deltaPositions == 0) return
-
-        val target = (from + deltaPositions).coerceIn(pinnedCount, order.lastIndex)
-        if (target == from) {
-            dragOffset = dragOffset.coerceIn(-rowHeightPx, rowHeightPx)
-            return
-        }
-
-        val mutable = order.toMutableList()
-        mutable.removeAt(from)
-        mutable.add(target, noteId)
-        dragOrder = mutable
-        dragOffset -= (target - from) * rowHeightPx
+        val minOffset = (pinnedCount - from) * rowHeightPx
+        val maxOffset = (order.lastIndex - from) * rowHeightPx
+        dragOffset = (dragOffset + deltaY).coerceIn(minOffset, maxOffset)
+        if (abs(deltaY) > 0.5f) dragMoved = true
     }
 
     fun endDrag() {
         val order = dragOrder
-        if (dragMoved && order != null) {
-            val nonPinnedIds = order.filter { id -> noteMap[id]?.let { !isNotePinned(it) } == true }
-            viewModel.applyDisplayOrder(nonPinnedIds)
+        val noteId = draggingId
+        if (dragMoved && order != null && noteId != null) {
+            val from = order.indexOf(noteId)
+            val target = if (from >= 0) {
+                (from + (dragOffset / rowHeightPx).roundToInt()).coerceIn(pinnedCount, order.lastIndex)
+            } else {
+                from
+            }
+            if (from >= 0 && target != from) {
+                val mutable = order.toMutableList()
+                mutable.removeAt(from)
+                mutable.add(target, noteId)
+                val nonPinnedIds = mutable.filter { id -> noteMap[id]?.let { !isNotePinned(it) } == true }
+                viewModel.applyDisplayOrder(nonPinnedIds)
+            }
         }
         dragOrder = null
         draggingId = null
@@ -440,8 +445,14 @@ fun NoteListScreen(viewModel: NotesViewModel) {
                             )
                         }
                     } else {
-                        items(displayNotes, key = { it.id }) { note ->
+                        itemsIndexed(displayNotes, key = { _, note -> note.id }) { index, note ->
                             val isDragging = draggingId == note.id
+                            val dragShift = when {
+                                isDragging -> dragOffset
+                                dragFromIndex < dragToIndex && index in (dragFromIndex + 1)..dragToIndex -> -rowHeightPx
+                                dragToIndex < dragFromIndex && index in dragToIndex until dragFromIndex -> rowHeightPx
+                                else -> 0f
+                            }
                             NoteRow(
                                 note = note,
                                 title = listTitles[note.id] ?: getNoteListTitle(note.markdown),
@@ -450,7 +461,7 @@ fun NoteListScreen(viewModel: NotesViewModel) {
                                 isSelected = draggingId == note.id,
                                 isAnyDragging = draggingId != null,
                                 isDragging = isDragging,
-                                dragOffset = if (isDragging) dragOffset else 0f,
+                                dragShift = dragShift,
                                 dragEnabled = searchQuery.isBlank() && !isNotePinned(note) && !isNoteDeleted(note),
                                 swipeEnabled = category != NoteCategory.Trash,
                                 onTap = {
@@ -477,8 +488,7 @@ fun NoteListScreen(viewModel: NotesViewModel) {
                                     viewModel.moveToTrash(note.id)
                                 },
                                 modifier = Modifier
-                                    .zIndex(if (isDragging) 10f else 0f)
-                                    .animateItem(),
+                                    .zIndex(if (isDragging) 10f else 0f),
                             )
                         }
                     }
@@ -605,7 +615,7 @@ private fun NoteRow(
     isSelected: Boolean,
     isAnyDragging: Boolean,
     isDragging: Boolean,
-    dragOffset: Float,
+    dragShift: Float,
     dragEnabled: Boolean,
     swipeEnabled: Boolean,
     onTap: () -> Unit,
@@ -640,8 +650,7 @@ private fun NoteRow(
             SwipeDeleteButton(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 22.dp)
-                    .alpha((swipeX / maxSwipe).coerceIn(0f, 1f)),
+                    .padding(start = 22.dp),
                 onClick = onRequestDelete,
             )
         }
@@ -651,8 +660,8 @@ private fun NoteRow(
                 .matchParentSize()
                 .graphicsLayer {
                     translationX = swipeX
+                    translationY = dragShift
                     if (isDragging) {
-                        translationY = dragOffset
                         alpha = 0.92f
                     }
                 }
