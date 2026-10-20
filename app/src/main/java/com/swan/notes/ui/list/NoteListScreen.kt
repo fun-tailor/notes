@@ -66,6 +66,13 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.toPath
+
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -985,6 +992,16 @@ private fun FloatingCreateButton(
     }
 }
 
+
+private const val PULL_SYNC_ICON_PATH =
+    "M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"
+
+private val PullSyncIconPath: Path by lazy {
+    PathParser()
+        .parsePathString(PULL_SYNC_ICON_PATH)
+        .toPath()
+}
+
 @Composable
 private fun BoxScope.PullIndicator(
     phase: PullPhase,
@@ -997,6 +1014,7 @@ private fun BoxScope.PullIndicator(
     val density = LocalDensity.current
     val triggerPx = with(density) { PullTrigger.toPx() }
     val progress = (offset / triggerPx).coerceIn(0f, 1f)
+
     val infinite = rememberInfiniteTransition(label = "pullSync")
     val spin by infinite.animateFloat(
         initialValue = 0f,
@@ -1028,36 +1046,28 @@ private fun BoxScope.PullIndicator(
             Canvas(
                 modifier = Modifier
                     .size(20.dp)
-                    .rotate(if (phase == PullPhase.Syncing) spin else progress * 180f),
+                    .rotate(
+                        if (phase == PullPhase.Syncing) {
+                            spin
+                        } else {
+                            progress * 180f
+                        }
+                    )
             ) {
-                val stroke = 1.5.dp.toPx()
-                val color = Color(0xFF8D7355)
-                drawArc(
-                    color = color,
-                    startAngle = 200f,
-                    sweepAngle = 270f,
-                    useCenter = false,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(
-                        width = stroke,
-                        cap = StrokeCap.Round,
-                    ),
-                )
-                val tip = Offset(size.width * 0.22f, size.height * 0.22f)
-                drawLine(
-                    color = color,
-                    start = tip,
-                    end = Offset(tip.x, tip.y - 5.dp.toPx()),
-                    strokeWidth = stroke,
-                    cap = StrokeCap.Round,
-                )
-                drawLine(
-                    color = color,
-                    start = tip,
-                    end = Offset(tip.x - 5.dp.toPx(), tip.y),
-                    strokeWidth = stroke,
-                    cap = StrokeCap.Round,
-                )
+                val iconScale = minOf(size.width, size.height) / 24f
+
+                scale(
+                    scaleX = iconScale,
+                    scaleY = iconScale,
+                    pivot = Offset.Zero
+                ) {
+                    drawPath(
+                        path = PullSyncIconPath,
+                        color = Color(0xFF8D7355)
+                    )
+                }
             }
+
             if (label.isNotEmpty()) {
                 Text(
                     text = label,
@@ -1069,6 +1079,4 @@ private fun BoxScope.PullIndicator(
         }
     }
 }
-
-
 
