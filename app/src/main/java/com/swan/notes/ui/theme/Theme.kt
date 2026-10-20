@@ -1,4 +1,4 @@
-package com.swan.notes.ui.theme
+﻿package com.swan.notes.ui.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -46,6 +46,7 @@ private val DarkScheme = darkColorScheme(
 @Composable
 fun SwanTheme(
     darkTheme: Boolean = false,
+    lightStatusBar: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = if (darkTheme) DarkColors else WarmColors
@@ -55,7 +56,7 @@ fun SwanTheme(
     SideEffect {
         val activity = view.context as? Activity ?: return@SideEffect
         val controller = WindowCompat.getInsetsController(activity.window, view)
-        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightStatusBars = lightStatusBar
         controller.isAppearanceLightNavigationBars = !colors.dark
     }
 
@@ -72,3 +73,4 @@ object SwanTheme {
     val colors: SwanColors
         @Composable get() = LocalSwanColors.current
 }
+

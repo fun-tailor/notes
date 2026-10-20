@@ -1,4 +1,4 @@
-package com.swan.notes.ui
+﻿package com.swan.notes.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -44,6 +44,8 @@ fun SwanNotesApp(
     val categoryOpen by viewModel.categoryOpen.collectAsStateWithLifecycle()
 
     val dark = settings.isDarkTheme(isSystemInDarkTheme())
+    val lightStatusBar = !dark && settingsOpen
+
 
     LaunchedEffect(sharedText) {
         if (!sharedText.isNullOrBlank()) {
@@ -56,7 +58,7 @@ fun SwanNotesApp(
         viewModel.onAppStopped()
     }
 
-    SwanTheme(darkTheme = dark) {
+    SwanTheme(darkTheme = dark, lightStatusBar = lightStatusBar) {
         Box(modifier = Modifier.fillMaxSize()) {
             when (screen) {
                 Screen.List -> NoteListScreen(viewModel = viewModel)
@@ -87,3 +89,4 @@ fun SwanNotesApp(
         }
     }
 }
+

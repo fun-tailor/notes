@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,8 +23,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -34,6 +38,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,9 +60,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -68,6 +82,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -85,7 +100,6 @@ import com.swan.notes.ui.common.DialogButton
 import com.swan.notes.ui.common.ListSheetRow
 import com.swan.notes.ui.common.PngIconButton
 import com.swan.notes.ui.common.SwanBottomSheet
-import com.swan.notes.ui.common.SwanConfirmDialog
 import com.swan.notes.ui.common.SwanTextField
 import com.swan.notes.ui.theme.SwanTheme
 import com.swan.notes.ui.common.TopBarContainer
@@ -99,9 +113,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val EditorLineHeight = 36.sp
+private val EditorLineHeight = 51.sp
 private val GutterWidth = 25.dp
-private val MetaBarHeight = 51.dp
 
 @OptIn(ExperimentalTextApi::class, FlowPreview::class)
 @Composable
@@ -121,18 +134,19 @@ fun EditorScreen(
     val view = LocalView.current
     val scrollState = rememberScrollState()
 
-    val noteState = remember(noteId) { TextFieldState(note?.markdown ?: "") }
+    val noteState = remember(noteId) { TextFieldState(note?.markdown ?: "", TextRange(0)) }
 
     var folderSheetOpen by remember { mutableStateOf(false) }
     var shareSheetOpen by remember { mutableStateOf(false) }
     var imageDialogOpen by remember { mutableStateOf(false) }
-    var deleteConfirmOpen by remember { mutableStateOf(false) }
-    var permanentConfirmOpen by remember { mutableStateOf(false) }
+    var topMenuOpen by remember { mutableStateOf(false) }
+    var isEditorFocused by remember { mutableStateOf(false) }
+    var caretRect by remember { mutableStateOf<Rect?>(null) }
 
     val isDeleted = note?.let(::isNoteDeleted) == true
     val lineHeightPx = with(density) { EditorLineHeight.toPx() }
     val lineHeightDp = with(density) { lineHeightPx.toDp() }
-    val metaBarHeightPx = with(density) { MetaBarHeight.toPx() }
+    val metaBarHeightPx = lineHeightPx
     var viewportHeightPx by remember { mutableIntStateOf(0) }
 
     val charCount by produceState(
@@ -189,6 +203,11 @@ fun EditorScreen(
         onDispose { view.keepScreenOn = previous }
     }
 
+    LaunchedEffect(noteId) {
+        scrollState.scrollTo(0)
+        caretRect = null
+    }
+
     LaunchedEffect(autoFocus) {
         if (autoFocus && !isDeleted) {
             delay(120)
@@ -219,22 +238,23 @@ fun EditorScreen(
 
                 if (isDeleted) {
                     TopBarTextButton(text = "恢复", onClick = { viewModel.restore(noteId) })
-                    TopBarTextButton(text = "永久删除", onClick = { permanentConfirmOpen = true })
+                    TopBarTextButton(text = "永久删除", onClick = { viewModel.deleteCurrent(noteId) })
                 } else {
-                    PngIconButton(
-                        resourceId = if (colors.dark) R.drawable.btn_pic_dark else R.drawable.btn_pic,
-                        contentDescription = "插入图片链接",
-                        onClick = { imageDialogOpen = true },
-                    )
-                    PngIconButton(
-                        resourceId = R.drawable.btn_delete_notes,
-                        contentDescription = "删除",
-                        onClick = { deleteConfirmOpen = true },
-                    )
-                    PngIconButton(
-                        resourceId = if (colors.dark) R.drawable.btn_share_notes_dark else R.drawable.btn_share_notes,
-                        contentDescription = "分享",
-                        onClick = { shareSheetOpen = true },
+                    EditorOverflowMenu(
+                        expanded = topMenuOpen,
+                        onExpandedChange = { topMenuOpen = it },
+                        onInsertImage = {
+                            topMenuOpen = false
+                            imageDialogOpen = true
+                        },
+                        onDelete = {
+                            topMenuOpen = false
+                            viewModel.deleteCurrent(noteId)
+                        },
+                        onShare = {
+                            topMenuOpen = false
+                            shareSheetOpen = true
+                        },
                     )
                     PngIconButton(
                         resourceId = if (colors.dark) R.drawable.btn_save_notes_dark else R.drawable.btn_save_notes,
@@ -253,7 +273,6 @@ fun EditorScreen(
                 .onSizeChanged { viewportHeightPx = it.height },
         ) {
             Box(modifier = Modifier.matchParentSize().background(colors.editorPaper))
-            GutterOverlay()
 
             Column(
                 modifier = Modifier
@@ -264,14 +283,21 @@ fun EditorScreen(
                     note = note,
                     folders = workspace.folders,
                     charCount = charCount,
+                    height = lineHeightDp,
+                    ruleColor = colors.editorRule,
                     folderEnabled = !isDeleted,
                     onFolderClick = { if (!isDeleted) folderSheetOpen = true },
                 )
 
+                val minTextHeight = with(density) {
+                    val remaining = (viewportHeightPx - metaBarHeightPx).coerceAtLeast(0f).toDp()
+                    maxOf(lineHeightDp * 3 + 24.dp, remaining)
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = lineHeightDp * 3 + 24.dp)
+                        .heightIn(min = minTextHeight)
                         .drawPaperRules(lineHeightPx, colors.editorRule),
                 ) {
                     CompositionLocalProvider(
@@ -285,7 +311,11 @@ fun EditorScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(start = 39.dp, end = 18.dp)
-                                .focusRequester(focusRequester),
+                                .focusRequester(focusRequester)
+                                .onFocusChanged {
+                                    isEditorFocused = it.isFocused
+                                    if (!it.isFocused) caretRect = null
+                                },
                             enabled = !isDeleted,
                             readOnly = isDeleted,
                             textStyle = TextStyle(
@@ -309,20 +339,24 @@ fun EditorScreen(
                                 val offset = noteState.selection.max
                                     .coerceIn(0, layout.layoutInput.text.length)
                                 val rect = layout.getCursorRect(offset)
+                                caretRect = rect
+                                if (!isEditorFocused) return@lbl
+
                                 val cursorTop = metaBarHeightPx + rect.top
                                 val cursorBottom = metaBarHeightPx + rect.bottom
+                                val edge = 4.dp.toPx()
                                 val visibleTop = scrollState.value.toFloat()
-                                val visibleBottom = visibleTop + viewportHeightPx - lineHeightPx
+                                val visibleBottom = visibleTop + viewportHeightPx
 
-                                if (cursorBottom > visibleBottom) {
-                                    val target = (cursorBottom - viewportHeightPx + lineHeightPx)
+                                if (cursorBottom > visibleBottom - edge) {
+                                    val target = (cursorBottom - viewportHeightPx + edge)
                                         .roundToInt()
                                         .coerceIn(0, scrollState.maxValue)
                                     if (target > scrollState.value) {
                                         scope.launch { scrollState.scrollTo(target) }
                                     }
-                                } else if (cursorTop < visibleTop + metaBarHeightPx) {
-                                    val target = (cursorTop - metaBarHeightPx)
+                                } else if (cursorTop < visibleTop + edge) {
+                                    val target = (cursorTop - edge)
                                         .roundToInt()
                                         .coerceAtLeast(0)
                                     if (target < scrollState.value) {
@@ -330,11 +364,19 @@ fun EditorScreen(
                                     }
                                 }
                             },
-                            cursorBrush = SolidColor(colors.caret),
+                            cursorBrush = SolidColor(Color.Transparent),
                         )
                     }
+
+                    EditorCaret(
+                        caretRect = caretRect,
+                        visible = isEditorFocused && noteState.selection.collapsed,
+                        color = colors.caret,
+                    )
                 }
             }
+
+            GutterOverlay()
         }
     }
 
@@ -380,32 +422,6 @@ fun EditorScreen(
             },
         )
     }
-
-    if (deleteConfirmOpen) {
-        SwanConfirmDialog(
-            title = "删除便签",
-            message = "将这张便签移到回收站？",
-            confirmLabel = "删除",
-            onConfirm = {
-                deleteConfirmOpen = false
-                viewModel.deleteCurrent(noteId)
-            },
-            onDismiss = { deleteConfirmOpen = false },
-        )
-    }
-
-    if (permanentConfirmOpen) {
-        SwanConfirmDialog(
-            title = "永久删除",
-            message = "永久删除后无法恢复，确定继续？",
-            confirmLabel = "永久删除",
-            onConfirm = {
-                permanentConfirmOpen = false
-                viewModel.deleteCurrent(noteId)
-            },
-            onDismiss = { permanentConfirmOpen = false },
-        )
-    }
 }
 
 @Composable
@@ -449,6 +465,8 @@ private fun EditorMetaBar(
     note: NoteDocument,
     folders: List<NoteFolder>,
     charCount: Int,
+    height: Dp,
+    ruleColor: Color,
     folderEnabled: Boolean,
     onFolderClick: () -> Unit,
 ) {
@@ -457,65 +475,152 @@ private fun EditorMetaBar(
         note.folderId?.let { NoteCategory.Folder(it) } ?: NoteCategory.All,
         folders,
     )
+    val stroke = 0.6667.dp
 
-    Column(modifier = Modifier.fillMaxWidth().background(colors.metaBackground)) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height)
+            .background(colors.metaBackground)
+            .drawBehind {
+                drawLine(
+                    color = ruleColor,
+                    start = Offset(GutterWidth.toPx(), size.height - stroke.toPx() / 2f),
+                    end = Offset(size.width, size.height - stroke.toPx() / 2f),
+                    strokeWidth = stroke.toPx(),
+                )
+            }
+            .padding(start = 35.dp, end = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .padding(start = 35.dp, end = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                modifier = Modifier
-                    .height(20.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(colors.folderBackground)
-                    .border(0.6667.dp, colors.folderBorder, RoundedCornerShape(4.dp))
-                    .then(
-                        if (folderEnabled) {
-                            Modifier.clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                role = Role.Button,
-                                onClick = onFolderClick,
-                            )
-                        } else {
-                            Modifier
-                        },
-                    )
-                    .padding(horizontal = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Text(text = "▧", color = colors.folderText.copy(alpha = 0.6f), fontSize = 10.sp)
-                Text(
-                    text = folderLabel,
-                    color = colors.folderText,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 120.dp),
+                .height(20.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(colors.folderBackground)
+                .border(0.6667.dp, colors.folderBorder, RoundedCornerShape(4.dp))
+                .then(
+                    if (folderEnabled) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onFolderClick,
+                        )
+                    } else {
+                        Modifier
+                    },
                 )
-                Text(text = "▾", color = colors.folderText.copy(alpha = 0.6f), fontSize = 9.sp)
-            }
-
-            Spacer(Modifier.weight(1f))
-
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(text = "▧", color = colors.folderText.copy(alpha = 0.6f), fontSize = 10.sp)
             Text(
-                text = "${formatNoteDate(note.updatedAt)} | $charCount",
-                color = colors.metaText,
+                text = folderLabel,
+                color = colors.folderText,
                 fontSize = 11.sp,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp),
+            )
+            Text(text = "▾", color = colors.folderText.copy(alpha = 0.6f), fontSize = 9.sp)
+        }
+
+        Text(
+            text = "${formatNoteDate(note.updatedAt)} | $charCount",
+            color = colors.metaText,
+            fontSize = 11.sp,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun EditorCaret(
+    caretRect: Rect?,
+    visible: Boolean,
+    color: Color,
+) {
+    if (!visible || caretRect == null) return
+
+    val blink by rememberInfiniteTransition(label = "caretBlink").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(520),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "caretBlinkAlpha",
+    )
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 39.dp, end = 18.dp),
+    ) {
+        val height = 20.sp.toPx()
+        val top = caretRect.center.y - height / 2f
+        drawRoundRect(
+            color = color.copy(alpha = if (blink > 0.5f) 1f else 0f),
+            topLeft = Offset(caretRect.left, top),
+            size = Size(2.dp.toPx(), height),
+            cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx()),
+        )
+    }
+}
+
+@Composable
+private fun EditorOverflowMenu(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onInsertImage: () -> Unit,
+    onDelete: () -> Unit,
+    onShare: () -> Unit,
+) {
+    val colors = SwanTheme.colors
+    Box {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    role = Role.Button,
+                    onClick = { onExpandedChange(true) },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "…",
+                color = colors.onTopBar,
+                fontSize = 30.sp,
+                lineHeight = 24.sp,
             )
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(colors.divider),
-        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            containerColor = colors.dialogBackground,
+        ) {
+            DropdownMenuItem(
+                text = { Text("插入图片链接", color = colors.ink, fontSize = 14.sp) },
+                onClick = onInsertImage,
+            )
+            DropdownMenuItem(
+                text = { Text("分享", color = colors.ink, fontSize = 14.sp) },
+                onClick = onShare,
+            )
+            DropdownMenuItem(
+                text = { Text("删除", color = colors.ink, fontSize = 14.sp) },
+                onClick = onDelete,
+            )
+        }
     }
 }
 
@@ -653,4 +758,8 @@ private fun ImageLinkDialog(
         }
     }
 }
+
+
+
+
 

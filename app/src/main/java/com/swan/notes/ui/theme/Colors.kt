@@ -1,4 +1,4 @@
-package com.swan.notes.ui.theme
+﻿package com.swan.notes.ui.theme
 
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -96,7 +96,7 @@ val WarmColors = SwanColors(
     settingsCardBorder = color(0xFFD5D6D8),
     settingsDivider = color(0xFFE6E7E9),
     accentGreen = color(0xFF8CA934),
-    fabBackground = Color(143, 93, 45, 199),
+    fabBackground = color(0xFF8F5D2D),
     onTopBar = color(0xFAFFFFFF),
     onTopBarMuted = color(0x9EFFFFFF),
 )
@@ -143,9 +143,10 @@ val DarkColors = SwanColors(
     settingsCardBorder = color(0xFF343134),
     settingsDivider = color(0xFF282828),
     accentGreen = color(0xFF8CA934),
-    fabBackground = Color(143, 93, 45, 199),
+    fabBackground = color(0xFF8F5D2D),
     onTopBar = color(0xFFCECECE),
     onTopBarMuted = color(0xFF8F8C8F),
 )
 
 val LocalSwanColors = staticCompositionLocalOf { WarmColors }
+

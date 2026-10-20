@@ -55,9 +55,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -107,7 +109,6 @@ import com.swan.notes.ui.common.EmptyState
 import com.swan.notes.ui.common.PaperSlice
 import com.swan.notes.ui.common.PngIconButton
 import com.swan.notes.ui.common.SearchMagnifier
-import com.swan.notes.ui.common.SwanConfirmDialog
 import com.swan.notes.ui.theme.SwanTheme
 import com.swan.notes.ui.common.TopBarContainer
 import com.swan.notes.ui.common.TopBarRow
@@ -168,8 +169,6 @@ fun NoteListScreen(viewModel: NotesViewModel) {
     val haptics = LocalHapticFeedback.current
 
     var openSwipeId by remember { mutableStateOf<String?>(null) }
-    var pendingTrash by remember { mutableStateOf<NoteDocument?>(null) }
-    var pendingPermanent by remember { mutableStateOf<NoteDocument?>(null) }
 
     var dragOrder by remember { mutableStateOf<List<String>?>(null) }
     var draggingId by remember { mutableStateOf<String?>(null) }
@@ -441,6 +440,8 @@ fun NoteListScreen(viewModel: NotesViewModel) {
                                 title = listTitles[note.id] ?: getNoteListTitle(note.markdown),
                                 isTrash = category == NoteCategory.Trash,
                                 isOpen = openSwipeId == note.id,
+                                isSelected = draggingId == note.id,
+                                isAnyDragging = draggingId != null,
                                 isDragging = isDragging,
                                 dragOffset = if (isDragging) dragOffset else 0f,
                                 dragEnabled = searchQuery.isBlank() && !isNotePinned(note) && !isNoteDeleted(note),
@@ -461,10 +462,12 @@ fun NoteListScreen(viewModel: NotesViewModel) {
                                 onToggleStar = { viewModel.toggleStarred(note.id) },
                                 onTogglePin = { viewModel.togglePinned(note.id) },
                                 onRestore = { viewModel.restore(note.id) },
-                                onPermanentDelete = { pendingPermanent = note },
+                                onPermanentDelete = {
+                                    viewModel.permanentlyDelete(note.id)
+                                },
                                 onRequestDelete = {
                                     openSwipeId = null
-                                    pendingTrash = note
+                                    viewModel.moveToTrash(note.id)
                                 },
                                 modifier = Modifier
                                     .zIndex(if (isDragging) 10f else 0f)
@@ -514,32 +517,6 @@ fun NoteListScreen(viewModel: NotesViewModel) {
             )
         }
     }
-
-    pendingTrash?.let { note ->
-        SwanConfirmDialog(
-            title = "删除便签",
-            message = "将这张便签移到回收站？",
-            confirmLabel = "删除",
-            onConfirm = {
-                pendingTrash = null
-                viewModel.moveToTrash(note.id)
-            },
-            onDismiss = { pendingTrash = null },
-        )
-    }
-
-    pendingPermanent?.let { note ->
-        SwanConfirmDialog(
-            title = "永久删除",
-            message = "永久删除后无法恢复，确定继续？",
-            confirmLabel = "永久删除",
-            onConfirm = {
-                pendingPermanent = null
-                viewModel.permanentlyDelete(note.id)
-            },
-            onDismiss = { pendingPermanent = null },
-        )
-    }
 }
 
 @Composable
@@ -585,6 +562,29 @@ private fun SearchBar(
                     cursorBrush = SolidColor(colors.caret),
                 )
             }
+            if (query.isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = { onQueryChange("") },
+                        )
+                        .semantics { contentDescription = "清除搜索" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "×",
+                        color = colors.searchHint,
+                        fontSize = 17.sp,
+                        lineHeight = 17.sp,
+                    )
+                }
+            }
         }
     }
 }
@@ -595,6 +595,8 @@ private fun NoteRow(
     title: String,
     isTrash: Boolean,
     isOpen: Boolean,
+    isSelected: Boolean,
+    isAnyDragging: Boolean,
     isDragging: Boolean,
     dragOffset: Float,
     dragEnabled: Boolean,
@@ -615,7 +617,6 @@ private fun NoteRow(
     val density = LocalDensity.current
     val maxSwipe = with(density) { SwipeOpenWidth.toPx() }
     val threshold = with(density) { SwipeOpenThreshold.toPx() }
-    var pressed by remember(note.id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var swipeX by remember(note.id) { mutableFloatStateOf(if (isOpen) maxSwipe else 0f) }
 
@@ -628,11 +629,12 @@ private fun NoteRow(
     }
 
     Box(modifier = modifier.fillMaxWidth().height(RowHeight)) {
-        if (!isTrash) {
+        if (!isTrash && swipeX > 0.5f) {
             SwipeDeleteButton(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 22.dp),
+                    .padding(start = 22.dp)
+                    .alpha((swipeX / maxSwipe).coerceIn(0f, 1f)),
                 onClick = onRequestDelete,
             )
         }
@@ -645,7 +647,6 @@ private fun NoteRow(
                     if (isDragging) {
                         translationY = dragOffset
                         alpha = 0.92f
-                        shadowElevation = 7.dp.toPx()
                     }
                 }
                 .pointerInput(note.id, dragEnabled, swipeEnabled, isOpen) {
@@ -655,7 +656,6 @@ private fun NoteRow(
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        pressed = true
                         var mode = 0 // 0 pending, 1 swipe, 2 pass, 3 drag
                         var total = Offset.Zero
                         var currentOffset = swipeX
@@ -740,20 +740,10 @@ private fun NoteRow(
                                 break
                             }
                         }
-
-                        pressed = false
                     }
                 },
         ) {
-            PaperSlice(pressed = pressed, modifier = Modifier.matchParentSize())
-
-            ClipImage(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .width(28.6667.dp)
-                    .fillMaxHeight()
-                    .graphicsLayer { if (isDragging) translationX = -19.dp.toPx() },
-            )
+            PaperSlice(pressed = isSelected, modifier = Modifier.matchParentSize())
 
             Text(
                 text = formatNoteDate(note.updatedAt),
@@ -779,25 +769,28 @@ private fun NoteRow(
             )
 
             if (!isTrash) {
-                if (isNotePinned(note)) {
-                    Image(
-                        painter = painterResource(
-                            if (colors.dark) R.drawable.icon_top_checked_dark else R.drawable.icon_top_checked,
+                Image(
+                    painter = painterResource(
+                        when {
+                            isNotePinned(note) && colors.dark -> R.drawable.icon_top_checked_dark
+                            isNotePinned(note) -> R.drawable.icon_top_checked
+                            colors.dark -> R.drawable.icon_top_normal_dark
+                            else -> R.drawable.icon_top_normal
+                        },
+                    ),
+                    contentDescription = if (isNotePinned(note)) "取消置顶" else "置顶便签",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-43).dp)
+                        .size(width = 39.dp, height = 47.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onTogglePin,
                         ),
-                        contentDescription = "取消置顶",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = (-43).dp)
-                            .size(width = 39.dp, height = 47.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                role = Role.Button,
-                                onClick = onTogglePin,
-                            ),
-                    )
-                }
+                )
 
                 Image(
                     painter = painterResource(
@@ -832,6 +825,16 @@ private fun NoteRow(
                 }
             }
         }
+
+        ClipImage(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .width(28.6667.dp)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    translationX = if (isAnyDragging || swipeX > 0.5f) -19.dp.toPx() else 0f
+                },
+        )
     }
 }
 
@@ -988,9 +991,9 @@ private fun BoxScope.PullIndicator(
     offset: Float,
     message: String,
 ) {
-    val colors = SwanTheme.colors
     if (phase == PullPhase.Idle && offset <= 0f) return
 
+    val colors = SwanTheme.colors
     val density = LocalDensity.current
     val triggerPx = with(density) { PullTrigger.toPx() }
     val progress = (offset / triggerPx).coerceIn(0f, 1f)
@@ -1010,50 +1013,62 @@ private fun BoxScope.PullIndicator(
         else -> ""
     }
 
-    Row(
+    Box(
         modifier = Modifier
             .align(Alignment.TopCenter)
-            .padding(top = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .fillMaxWidth()
+            .height(with(density) { offset.coerceAtLeast(0f).toDp() })
+            .clipToBounds(),
+        contentAlignment = Alignment.Center,
     ) {
-        Canvas(
-            modifier = Modifier
-                .size(20.dp)
-                .rotate(if (phase == PullPhase.Syncing) spin else progress * 180f),
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            val stroke = 1.8.dp.toPx()
-            val color = Color(0xFF8D7355)
-            drawArc(
-                color = color,
-                startAngle = 200f,
-                sweepAngle = 270f,
-                useCenter = false,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                    width = stroke,
+            Canvas(
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(if (phase == PullPhase.Syncing) spin else progress * 180f),
+            ) {
+                val stroke = 1.5.dp.toPx()
+                val color = Color(0xFF8D7355)
+                drawArc(
+                    color = color,
+                    startAngle = 200f,
+                    sweepAngle = 270f,
+                    useCenter = false,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = stroke,
+                        cap = StrokeCap.Round,
+                    ),
+                )
+                val tip = Offset(size.width * 0.22f, size.height * 0.22f)
+                drawLine(
+                    color = color,
+                    start = tip,
+                    end = Offset(tip.x, tip.y - 5.dp.toPx()),
+                    strokeWidth = stroke,
                     cap = StrokeCap.Round,
-                ),
-            )
-            val tip = Offset(size.width * 0.22f, size.height * 0.22f)
-            drawLine(
-                color = color,
-                start = tip,
-                end = Offset(tip.x, tip.y - 5.dp.toPx()),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round,
-            )
-            drawLine(
-                color = color,
-                start = tip,
-                end = Offset(tip.x - 5.dp.toPx(), tip.y),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round,
-            )
-        }
-        if (label.isNotEmpty()) {
-            Text(text = label, color = colors.metaText, fontSize = 12.sp)
+                )
+                drawLine(
+                    color = color,
+                    start = tip,
+                    end = Offset(tip.x - 5.dp.toPx(), tip.y),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
+            }
+            if (label.isNotEmpty()) {
+                Text(
+                    text = label,
+                    color = colors.metaText,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Normal,
+                )
+            }
         }
     }
 }
+
 
 
