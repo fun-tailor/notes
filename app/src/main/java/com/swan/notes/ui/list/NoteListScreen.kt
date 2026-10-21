@@ -968,7 +968,7 @@ private fun FloatingCreateButton(
                 scaleX = scale
                 scaleY = scale
             }
-            .shadow(6.dp, CircleShape)
+            //.shadow(6.dp, CircleShape) //会出现 8边形
             .size(56.dp)
             .clip(CircleShape)
             .background(colors.fabBackground)

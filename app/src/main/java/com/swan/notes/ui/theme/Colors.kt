@@ -96,7 +96,7 @@ val WarmColors = SwanColors(
     settingsCardBorder = color(0xFFD5D6D8),
     settingsDivider = color(0xFFE6E7E9),
     accentGreen = color(0xFF8CA934),
-    fabBackground = color(0xFF8F5D2D),
+    fabBackground = color(0x888F5D2D),
     onTopBar = color(0xFAFFFFFF),
     onTopBarMuted = color(0x9EFFFFFF),
 )
@@ -145,7 +145,7 @@ val DarkColors = SwanColors(
     accentGreen = color(0xFF8CA934),
     fabBackground = color(0xFF8F5D2D),
     onTopBar = color(0xFFCECECE),
-    onTopBarMuted = color(0xFF8F8C8F),
+    onTopBarMuted = color(0x888F8C8F),
 )
 
 val LocalSwanColors = staticCompositionLocalOf { WarmColors }
