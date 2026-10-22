@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,22 +35,19 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -64,8 +62,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
+
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
@@ -83,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -90,7 +92,6 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.swan.notes.R
 import com.swan.notes.data.NoteCategory
-import com.swan.notes.data.NoteDocument
 import com.swan.notes.data.NoteFolder
 import com.swan.notes.data.countMeaningfulChars
 import com.swan.notes.data.isNoteDeleted
@@ -108,14 +109,20 @@ import com.swan.notes.ui.common.formatNoteDate
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 private val EditorLineHeight = 51.sp
 private val GutterWidth = 25.dp
+private val EditorTextStart = 39.dp
+private val EditorTextEnd = 18.dp
 
 @OptIn(ExperimentalTextApi::class, FlowPreview::class)
 @Composable
@@ -125,8 +132,16 @@ fun EditorScreen(
     autoFocus: Boolean,
 ) {
     val colors = SwanTheme.colors
-    val workspace by viewModel.workspace.collectAsStateWithLifecycle()
-    val note = workspace.notes.firstOrNull { it.id == noteId }
+    val initialNote = remember(noteId) { viewModel.noteById(noteId) }
+    val foldersFlow = remember(viewModel) {
+        viewModel.workspace.map { it.folders }.distinctUntilChanged()
+    }
+    val folders by foldersFlow.collectAsStateWithLifecycle(
+        initialValue = viewModel.workspace.value.folders,
+    )
+    var folderId by remember(noteId) { mutableStateOf(initialNote?.folderId) }
+    var deleted by remember(noteId) { mutableStateOf(initialNote?.let(::isNoteDeleted) == true) }
+    val note = initialNote
     val context = LocalContext.current
     val density = LocalDensity.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -142,23 +157,18 @@ fun EditorScreen(
     var imageDialogOpen by remember { mutableStateOf(false) }
     var topMenuOpen by remember { mutableStateOf(false) }
     var isEditorFocused by remember { mutableStateOf(false) }
-    var caretRect by remember { mutableStateOf<Rect?>(null) }
+    val caretRect = remember(noteId) { mutableStateOf<Rect?>(null) }
     var lastAutoScrollOffset by remember(noteId) { mutableIntStateOf(-1) }
     var lastAutoScrollViewport by remember(noteId) { mutableIntStateOf(-1) }
 
-    val isDeleted = note?.let(::isNoteDeleted) == true
+    val isDeleted = deleted
     val lineHeightPx = with(density) { EditorLineHeight.toPx() }
     val lineHeightDp = with(density) { lineHeightPx.toDp() }
     val metaBarHeightPx = lineHeightPx
     var viewportHeightPx by remember { mutableIntStateOf(0) }
 
-    val charCount by produceState(
-        initialValue = countMeaningfulChars(noteState.text.toString()),
-        noteId,
-    ) {
-        snapshotFlow { noteState.text.toString() }
-            .debounce(100)
-            .collect { value = countMeaningfulChars(it) }
+    val charCount = remember(noteId) {
+        mutableIntStateOf(countMeaningfulChars(note?.markdown.orEmpty()))
     }
 
     fun currentMarkdown(): String = noteState.text.toString()
@@ -195,9 +205,13 @@ fun EditorScreen(
 
     LaunchedEffect(noteId, isDeleted) {
         if (isDeleted) return@LaunchedEffect
-        snapshotFlow { noteState.text.toString() }
+        snapshotFlow { noteState.text }
             .debounce(300)
-            .collect { text -> viewModel.updateMarkdown(noteId, text) }
+            .collect { text ->
+                val markdown = text.toString()
+                charCount.intValue = countMeaningfulChars(markdown)
+                viewModel.updateMarkdown(noteId, markdown)
+            }
     }
 
     DisposableEffect(Unit) {
@@ -208,7 +222,7 @@ fun EditorScreen(
 
     LaunchedEffect(noteId) {
         scrollState.scrollTo(0)
-        caretRect = null
+        caretRect.value = null
         lastAutoScrollOffset = -1
         lastAutoScrollViewport = -1
     }
@@ -223,7 +237,7 @@ fun EditorScreen(
 
     LaunchedEffect(isEditorFocused, viewportHeightPx) {
         if (!isEditorFocused || viewportHeightPx <= 0) return@LaunchedEffect
-        val rect = caretRect ?: return@LaunchedEffect
+        val rect = caretRect.value ?: return@LaunchedEffect
         val edge = with(density) { 4.dp.toPx() }
         val cursorTop = metaBarHeightPx + rect.top
         val cursorBottom = metaBarHeightPx + rect.bottom
@@ -266,7 +280,10 @@ fun EditorScreen(
                 Spacer(Modifier.weight(1f))
 
                 if (isDeleted) {
-                    TopBarTextButton(text = "恢复", onClick = { viewModel.restore(noteId) })
+                    TopBarTextButton(text = "恢复", onClick = {
+                        deleted = false
+                        viewModel.restore(noteId)
+                    })
                     TopBarTextButton(text = "永久删除", onClick = { viewModel.deleteCurrent(noteId) })
                 } else {
                     EditorOverflowMenu(
@@ -299,9 +316,16 @@ fun EditorScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .clipToBounds()
                 .onSizeChanged { viewportHeightPx = it.height },
         ) {
             Box(modifier = Modifier.matchParentSize().background(colors.editorPaper))
+
+            PaperRulesOverlay(
+                periodPx = lineHeightPx,
+                scrollState = scrollState,
+                ruleColor = colors.editorRule,
+            )
 
             Column(
                 modifier = Modifier
@@ -309,9 +333,10 @@ fun EditorScreen(
                     .verticalScroll(scrollState),
             ) {
                 EditorMetaBar(
-                    note = note,
-                    folders = workspace.folders,
-                    charCount = charCount,
+                    folderId = folderId,
+                    updatedAt = note.updatedAt,
+                    folders = folders,
+                    charCount = { charCount.intValue },
                     height = lineHeightDp,
                     ruleColor = colors.editorRule,
                     folderEnabled = !isDeleted,
@@ -326,9 +351,30 @@ fun EditorScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = minTextHeight)
-                        .drawPaperRules(lineHeightPx, colors.editorRule),
+                        .heightIn(min = minTextHeight),
                 ) {
+                    if (!isDeleted) {
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .padding(start = EditorTextStart, end = EditorTextEnd)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) {
+                                    noteState.edit {
+                                        selection = TextRange(noteState.text.length)
+                                    }
+                                    focusRequester.requestFocus()
+                                    keyboard?.show()
+                                    scope.launch {
+                                        delay(100)
+                                        scrollState.animateScrollTo(scrollState.maxValue)
+                                    }
+                                },
+                        )
+                    }
+
                     CompositionLocalProvider(
                         LocalTextSelectionColors provides TextSelectionColors(
                             handleColor = colors.caret,
@@ -339,11 +385,11 @@ fun EditorScreen(
                             state = noteState,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 39.dp, end = 18.dp)
+                                .padding(start = EditorTextStart, end = EditorTextEnd)
                                 .focusRequester(focusRequester)
                                 .onFocusChanged {
                                     isEditorFocused = it.isFocused
-                                    if (!it.isFocused) caretRect = null
+                                    if (!it.isFocused) caretRect.value = null
                                 },
                             enabled = !isDeleted,
                             readOnly = isDeleted,
@@ -368,7 +414,7 @@ fun EditorScreen(
                                 val offset = noteState.selection.max
                                     .coerceIn(0, layout.layoutInput.text.length)
                                 val rect = layout.getCursorRect(offset)
-                                caretRect = rect
+                                caretRect.value = rect
                                 if (!isEditorFocused) {
                                     lastAutoScrollOffset = -1
                                     return@lbl
@@ -404,30 +450,34 @@ fun EditorScreen(
                             cursorBrush = SolidColor(Color.Transparent),
                         )
                     }
-
-                    EditorCaret(
-                        caretRect = caretRect,
-                        visible = isEditorFocused && noteState.selection.collapsed,
-                        color = colors.caret,
-                    )
                 }
             }
 
             GutterOverlay(
                 periodPx = lineHeightPx,
-                scrollOffset = scrollState.value,
+                scrollState = scrollState,
                 ruleColor = colors.editorRule,
+            )
+
+            EditorCaret(
+                noteState = noteState,
+                caretRect = caretRect,
+                scrollState = scrollState,
+                metaBarHeightPx = metaBarHeightPx,
+                visible = isEditorFocused,
+                color = colors.caret,
             )
         }
     }
 
     if (folderSheetOpen) {
         FolderPickerSheet(
-            folders = workspace.folders,
-            currentFolderId = note.folderId,
-            onSelect = { folderId ->
+            folders = folders,
+            currentFolderId = folderId,
+            onSelect = { selectedFolderId ->
                 folderSheetOpen = false
-                viewModel.moveNoteToFolder(noteId, folderId)
+                folderId = selectedFolderId
+                viewModel.moveNoteToFolder(noteId, selectedFolderId)
             },
             onDismiss = { folderSheetOpen = false },
         )
@@ -466,9 +516,20 @@ fun EditorScreen(
 }
 
 @Composable
+private fun PaperRulesOverlay(
+    periodPx: Float,
+    scrollState: ScrollState,
+    ruleColor: Color,
+) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        drawRuleLines(periodPx, scrollState.value, ruleColor, GutterWidth.toPx())
+    }
+}
+
+@Composable
 private fun GutterOverlay(
     periodPx: Float,
-    scrollOffset: Int,
+    scrollState: ScrollState,
     ruleColor: Color,
 ) {
     val colors = SwanTheme.colors
@@ -478,20 +539,7 @@ private fun GutterOverlay(
             .width(GutterWidth)
             .background(colors.gutterBackground)
             .drawBehind {
-                if (periodPx <= 0f) return@drawBehind
-                val stroke = 0.6667.dp.toPx()
-                var index = ceil(scrollOffset / periodPx).toInt().coerceAtLeast(1)
-                var y = index * periodPx - scrollOffset
-                while (y <= size.height) {
-                    drawLine(
-                        color = ruleColor,
-                        start = Offset(0f, y),
-                        end = Offset(size.width, y),
-                        strokeWidth = stroke,
-                    )
-                    index += 1
-                    y += periodPx
-                }
+                drawRuleLines(periodPx, scrollState.value, ruleColor, 0f)
             },
     ) {
         Box(
@@ -504,28 +552,34 @@ private fun GutterOverlay(
     }
 }
 
-private fun Modifier.drawPaperRules(periodPx: Float, ruleColor: Color): Modifier = this.then(
-    Modifier.drawBehind {
-        if (periodPx <= 0f) return@drawBehind
-        val stroke = 0.6667.dp.toPx()
-        var y = periodPx
-        while (y <= size.height + periodPx) {
-            drawLine(
-                color = ruleColor,
-                start = Offset(GutterWidth.toPx(), y),
-                end = Offset(size.width, y),
-                strokeWidth = stroke,
-            )
-            y += periodPx
-        }
-    },
-)
+private fun DrawScope.drawRuleLines(
+    periodPx: Float,
+    scrollOffset: Int,
+    ruleColor: Color,
+    startX: Float,
+) {
+    if (periodPx <= 0f) return
+    val stroke = 0.6667.dp.toPx()
+    var index = ceil(scrollOffset / periodPx).toInt().coerceAtLeast(1)
+    var y = index * periodPx - scrollOffset
+    while (y <= size.height) {
+        drawLine(
+            color = ruleColor,
+            start = Offset(startX, y),
+            end = Offset(size.width, y),
+            strokeWidth = stroke,
+        )
+        index += 1
+        y += periodPx
+    }
+}
 
 @Composable
 private fun EditorMetaBar(
-    note: NoteDocument,
+    folderId: String?,
+    updatedAt: Long,
     folders: List<NoteFolder>,
-    charCount: Int,
+    charCount: () -> Int,
     height: Dp,
     ruleColor: Color,
     folderEnabled: Boolean,
@@ -533,7 +587,7 @@ private fun EditorMetaBar(
 ) {
     val colors = SwanTheme.colors
     val folderLabel = noteCategoryLabel(
-        note.folderId?.let { NoteCategory.Folder(it) } ?: NoteCategory.All,
+        folderId?.let { NoteCategory.Folder(it) } ?: NoteCategory.All,
         folders,
     )
     val stroke = 0.6667.dp
@@ -589,7 +643,7 @@ private fun EditorMetaBar(
         }
 
         Text(
-            text = "${formatNoteDate(note.updatedAt)} | $charCount",
+            text = "${formatNoteDate(updatedAt)} | ${charCount()}",
             color = colors.metaText,
             fontSize = 11.sp,
             maxLines = 1,
@@ -602,36 +656,54 @@ private fun EditorMetaBar(
 
 @Composable
 private fun EditorCaret(
-    caretRect: Rect?,
+    noteState: TextFieldState,
+    caretRect: State<Rect?>,
+    scrollState: ScrollState,
+    metaBarHeightPx: Float,
     visible: Boolean,
     color: Color,
 ) {
-    if (!visible || caretRect == null) return
+    if (!visible) return
 
-    val blink by rememberInfiniteTransition(label = "caretBlink").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(520),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "caretBlinkAlpha",
-    )
-
-    Canvas(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(start = 39.dp, end = 18.dp),
-    ) {
-        val height = 20.sp.toPx()
-        val top = caretRect.center.y - height / 2f
-        drawRoundRect(
-            color = color.copy(alpha = if (blink > 0.5f) 1f else 0f),
-            topLeft = Offset(caretRect.left, top),
-            size = Size(2.dp.toPx(), height),
-            cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx()),
-        )
+    val blinkAlpha = remember { mutableFloatStateOf(1f) }
+    LaunchedEffect(noteState) {
+        val reset = Channel<Unit>(Channel.CONFLATED)
+        launch {
+            snapshotFlow { noteState.selection.max }.collect { reset.trySend(Unit) }
+        }
+        while (true) {
+            blinkAlpha.floatValue = 1f
+            if (withTimeoutOrNull(500) { reset.receive() } != null) continue
+            blinkAlpha.floatValue = 0f
+            if (withTimeoutOrNull(500) { reset.receive() } != null) continue
+        }
     }
+
+    Box(
+        modifier = Modifier
+            .offset {
+                val rect = caretRect.value
+                if (rect == null) {
+                    IntOffset(0, -100)
+                } else {
+                    IntOffset(
+                        x = EditorTextStart.roundToPx() + rect.left.roundToInt(),
+                        y = (metaBarHeightPx + rect.center.y - scrollState.value - 10.dp.toPx())
+                            .roundToInt(),
+                    )
+                }
+            }
+            .size(width = 2.dp, height = 20.dp)
+            .graphicsLayer {
+                alpha = if (noteState.selection.collapsed && blinkAlpha.floatValue > 0.5f) 1f else 0f
+            }
+            .drawBehind {
+                drawRoundRect(
+                    color = color,
+                    cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx()),
+                )
+            },
+    )
 }
 
 @Composable

@@ -56,10 +56,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
@@ -67,6 +70,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.PathParser
@@ -542,31 +546,75 @@ private fun SearchBar(
     onQueryChange: (String) -> Unit,
 ) {
     val colors = SwanTheme.colors
+    val shape = RoundedCornerShape(50)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 7.dp, bottom = 6.dp)
+            .padding(start = 12.dp, end = 12.dp, top = 7.dp, bottom = 3.dp)
             .height(31.3333.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(6.dp))
-                .background(colors.searchBackground)
-                .padding(start = 8.dp, end = 10.dp),
+                .clip(shape)
+                .drawBehind {
+                    val radius = CornerRadius(size.height / 2f)
+                    val topShadow = if (colors.dark) Color(0x66000000) else Color(0x335C3C2A)
+                    val sideShadow = if (colors.dark) Color(0x40000000) else Color(0x1F5C3C2A)
+                    drawRoundRect(color = colors.searchBackground, cornerRadius = radius)
+                    drawRoundRect(
+                        brush = Brush.verticalGradient(
+                            0f to topShadow,
+                            0.55f to topShadow.copy(alpha = topShadow.alpha * 0.65f),
+                            1f to Color.Transparent,
+                            startY = 0f,
+                            endY = 2.5.dp.toPx(),
+                        ),
+                        cornerRadius = radius,
+                    )
+                    clipRect(bottom = size.height * 0.52f) {
+                        val sideDepth = 2.dp.toPx()
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(
+                                0f to sideShadow,
+                                0.55f to sideShadow.copy(alpha = sideShadow.alpha * 0.6f),
+                                1f to Color.Transparent,
+                                startX = 0f,
+                                endX = sideDepth,
+                            ),
+                            cornerRadius = radius,
+                        )
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(
+                                0f to sideShadow,
+                                0.55f to sideShadow.copy(alpha = sideShadow.alpha * 0.6f),
+                                1f to Color.Transparent,
+                                startX = size.width,
+                                endX = size.width - sideDepth,
+                            ),
+                            cornerRadius = radius,
+                        )
+                    }
+                    drawRoundRect(
+                        color = colors.searchHint.copy(alpha = 0.18f),
+                        cornerRadius = radius,
+                        style = Stroke(width = 0.6667.dp.toPx()),
+                    )
+                }
+                .padding(start = 12.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             SearchMagnifier(
                 tint = colors.searchIcon,
                 modifier = Modifier.size(17.dp),
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(7.dp))
             Box(modifier = Modifier.weight(1f)) {
                 if (query.isEmpty()) {
                     Text(
-                        text = "搜索便签",
+                        text = "快速搜索关键字",
                         color = colors.searchHint,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                         maxLines = 1,
                     )
                 }
