@@ -77,6 +77,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -158,6 +159,8 @@ fun EditorScreen(
     var topMenuOpen by remember { mutableStateOf(false) }
     var isEditorFocused by remember { mutableStateOf(false) }
     val caretRect = remember(noteId) { mutableStateOf<Rect?>(null) }
+    val caretOffset = remember(noteId) { mutableIntStateOf(-1) }
+    val latestLayout = remember(noteId) { mutableStateOf<TextLayoutResult?>(null) }
     var lastAutoScrollOffset by remember(noteId) { mutableIntStateOf(-1) }
     var lastAutoScrollViewport by remember(noteId) { mutableIntStateOf(-1) }
 
@@ -223,8 +226,24 @@ fun EditorScreen(
     LaunchedEffect(noteId) {
         scrollState.scrollTo(0)
         caretRect.value = null
+        caretOffset.intValue = -1
+        latestLayout.value = null
         lastAutoScrollOffset = -1
         lastAutoScrollViewport = -1
+    }
+
+    LaunchedEffect(noteState) {
+        snapshotFlow { noteState.selection.max to noteState.text.length }
+            .collect { (offset, length) ->
+                val layout = latestLayout.value
+                if (layout == null || layout.layoutInput.text.length != length) {
+                    caretRect.value = null
+                    caretOffset.intValue = -1
+                } else {
+                    caretRect.value = layout.getCursorRect(offset.coerceIn(0, length))
+                    caretOffset.intValue = offset
+                }
+            }
     }
 
     LaunchedEffect(autoFocus) {
@@ -389,7 +408,6 @@ fun EditorScreen(
                                 .focusRequester(focusRequester)
                                 .onFocusChanged {
                                     isEditorFocused = it.isFocused
-                                    if (!it.isFocused) caretRect.value = null
                                 },
                             enabled = !isDeleted,
                             readOnly = isDeleted,
@@ -411,10 +429,12 @@ fun EditorScreen(
                             ),
                             onTextLayout = lbl@{ getResult ->
                                 val layout = getResult() ?: return@lbl
+                                latestLayout.value = layout
                                 val offset = noteState.selection.max
                                     .coerceIn(0, layout.layoutInput.text.length)
                                 val rect = layout.getCursorRect(offset)
                                 caretRect.value = rect
+                                caretOffset.intValue = offset
                                 if (!isEditorFocused) {
                                     lastAutoScrollOffset = -1
                                     return@lbl
@@ -462,6 +482,7 @@ fun EditorScreen(
             EditorCaret(
                 noteState = noteState,
                 caretRect = caretRect,
+                caretOffset = caretOffset,
                 scrollState = scrollState,
                 metaBarHeightPx = metaBarHeightPx,
                 visible = isEditorFocused,
@@ -658,6 +679,7 @@ private fun EditorMetaBar(
 private fun EditorCaret(
     noteState: TextFieldState,
     caretRect: State<Rect?>,
+    caretOffset: State<Int>,
     scrollState: ScrollState,
     metaBarHeightPx: Float,
     visible: Boolean,
@@ -669,7 +691,7 @@ private fun EditorCaret(
     LaunchedEffect(noteState) {
         val reset = Channel<Unit>(Channel.CONFLATED)
         launch {
-            snapshotFlow { noteState.selection.max }.collect { reset.trySend(Unit) }
+            snapshotFlow { caretOffset.value }.collect { reset.trySend(Unit) }
         }
         while (true) {
             blinkAlpha.floatValue = 1f
@@ -695,7 +717,15 @@ private fun EditorCaret(
             }
             .size(width = 2.dp, height = 20.dp)
             .graphicsLayer {
-                alpha = if (noteState.selection.collapsed && blinkAlpha.floatValue > 0.5f) 1f else 0f
+                alpha = if (
+                    noteState.selection.collapsed &&
+                    noteState.selection.max == caretOffset.value &&
+                    blinkAlpha.floatValue > 0.5f
+                ) {
+                    1f
+                } else {
+                    0f
+                }
             }
             .drawBehind {
                 drawRoundRect(
