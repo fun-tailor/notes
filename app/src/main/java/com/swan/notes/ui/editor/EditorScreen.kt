@@ -27,6 +27,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.input.pointer.pointerInput
+
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.rememberScrollState
@@ -370,9 +377,74 @@ fun EditorScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = minTextHeight),
+                        .heightIn(min = minTextHeight)
+                        // 【核心】在整个文本容器上监听手势
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                // 获取按下事件
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                
+                                // 判断点击的 X 坐标是否在左侧空白区（Gutter + 行首缩进）
+                                if (down.position.x < EditorTextStart.toPx()) {
+                                    // 拦截事件，防止穿透
+                                    down.consume()
+                                    
+                                    // 1. 只要点击左侧区域，立刻请求焦点并唤起键盘，解决“必须先激活”的问题
+                                    focusRequester.requestFocus()
+                                    keyboard?.show()
+                                    
+                                    // 等待手指抬起，形成完整的点击
+                                    val up = waitForUpOrCancellation()
+                                    if (up != null) {
+                                        val layout = latestLayout.value
+                                        if (layout != null) {
+                                            // 判断点击位置是否超出了文本的实际高度（即点在了下方的空白区）
+                                            if (down.position.y <= layout.size.height) {
+                                                // 点在文本行内：计算行号，跳转到该行行首
+                                                val line = layout.getLineForVerticalPosition(down.position.y)
+                                                val lineStart = layout.getLineStart(line)
+                                                noteState.edit { selection = TextRange(lineStart) }
+                                            } else {
+                                                // 点在下方的空白区域：兼容原有设计，跳转到文本末尾
+                                                noteState.edit { selection = TextRange(noteState.text.length) }
+                                            }
+                                            
+                                            // 触发自动滚动，确保光标在屏幕可视区域内
+                                            scope.launch {
+                                                delay(50)
+                                                val currentOffset = noteState.selection.max
+                                                val rect = layout.getCursorRect(currentOffset.coerceIn(0, layout.layoutInput.text.length))
+                                                val cursorTop = metaBarHeightPx + rect.top
+                                                val cursorBottom = metaBarHeightPx + rect.bottom
+                                                val edge = with(density) { 4.dp.toPx() }
+                                                val visibleTop = scrollState.value.toFloat()
+                                                val visibleBottom = visibleTop + viewportHeightPx
+                                                
+                                                if (cursorBottom > visibleBottom - edge) {
+                                                    val target = (cursorBottom - viewportHeightPx + edge)
+                                                        .roundToInt()
+                                                        .coerceIn(0, scrollState.maxValue)
+                                                    if (target > scrollState.value) {
+                                                        scrollState.animateScrollTo(target)
+                                                    }
+                                                } else if (cursorTop < visibleTop + edge) {
+                                                    val target = (cursorTop - edge)
+                                                        .roundToInt()
+                                                        .coerceAtLeast(0)
+                                                    if (target < scrollState.value) {
+                                                        scrollState.animateScrollTo(target)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // 如果点击的 X 坐标 >= EditorTextStart，不消费事件，放行给 BasicTextField
+                            }
+                        },
                 ) {
                     if (!isDeleted) {
+                        // 原有的背景点击层（跳到末尾）保持不变
                         Box(
                             modifier = Modifier
                                 .matchParentSize()
@@ -394,6 +466,7 @@ fun EditorScreen(
                         )
                     }
 
+                    // 原有的 BasicTextField 保持不变
                     CompositionLocalProvider(
                         LocalTextSelectionColors provides TextSelectionColors(
                             handleColor = colors.caret,
